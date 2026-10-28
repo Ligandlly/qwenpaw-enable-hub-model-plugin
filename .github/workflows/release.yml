@@ -1,0 +1,163 @@
+name: release
+
+# Builds the offline-installable plugin ZIP and, on a tag (or an explicit
+# dispatch input), publishes it as a GitHub Release together with checksums.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (empty = build the package only)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install test runner
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Byte-compile
+        run: python -m compileall -q enable_hub_model.py tests scripts
+
+      - name: Test
+        run: python -m pytest
+
+      - name: Build offline-installable ZIP
+        run: python scripts/bundle.py
+
+      - name: Verify the ZIP needs no network and no site-packages
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(dist/*.zip)
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one ZIP in dist/, found ${#zips[@]}"
+            exit 1
+          fi
+          python scripts/verify_offline.py "${zips[0]}"
+
+      - name: Resolve release metadata
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          version=$(python -c 'import json,pathlib;print(json.loads(pathlib.Path("plugin.json").read_text(encoding="utf-8"))["version"])')
+          if [ "$EVENT" = "push" ]; then
+            tag="v${GITHUB_REF_NAME#v}"
+            publish=true
+          elif [ -n "${INPUT_TAG}" ]; then
+            tag="v${INPUT_TAG#v}"
+            publish=true
+          else
+            tag="v${version}"
+            publish=false
+          fi
+          if [ "${tag#v}" != "$version" ]; then
+            echo "::error::release tag ${tag} does not match plugin.json version ${version}"
+            exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "publish=${publish}"
+            echo "asset=$(cd dist && ls -1 ./*.zip | head -n 1 | sed 's|^\./||')"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=${version} tag=${tag} publish=${publish}"
+
+      - name: Write checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Write release notes
+        if: steps.meta.outputs.publish == 'true'
+        env:
+          ASSET: ${{ steps.meta.outputs.asset }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          Offline-installable plugin package. Pure Python standard library: no
+          dependencies, no package index, no network access at install time.
+
+          Download `@ASSET@` and `SHA256SUMS` while you still have network, copy
+          both to the air-gapped host, then:
+
+          ```bash
+          sha256sum -c SHA256SUMS          # verify what you copied
+          qpm install ./@ASSET@ --yes      # no pip, no registry, no internet
+          ```
+
+          Without qpm, drop the ZIP into the runtime console's plugin page, or:
+
+          ```bash
+          curl -sS -X POST "http://127.0.0.1:$PORT/api/plugins/upload?force=true" \
+            -H "X-QwenPaw-Runtime-Token: $TOKEN" \
+            -F "file=@.@ASSET@"
+          ```
+
+          ### 离线安装（中文）
+
+          1. 在有网机器上下载 `@ASSET@` 与 `SHA256SUMS`，拷进内网主机。
+          2. `sha256sum -c SHA256SUMS` 校验。
+          3. `qpm install ./@ASSET@ --yes`，或在运行时控制台上传 ZIP。插件只依赖
+             Python 标准库，安装过程不需要任何软件源。
+
+          ### Changes
+          NOTES
+          sed -i "s/@ASSET@/${ASSET}/g" "$RUNNER_TEMP/notes.md"
+          base=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          if [ -n "$base" ]; then
+            git log --no-merges --pretty='- %s' "${base}..HEAD" >> "$RUNNER_TEMP/notes.md" || true
+          else
+            git log --no-merges --pretty='- %s' -20 >> "$RUNNER_TEMP/notes.md" || true
+          fi
+
+      - name: Upload package as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: enable-hub-model-${{ steps.meta.outputs.version }}-offline
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip dist/SHA256SUMS --clobber
+          else
+            gh release create "$TAG" dist/*.zip dist/SHA256SUMS \
+              --target "$GITHUB_SHA" \
+              --title "enable-hub-model ${VERSION}" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release view "$TAG" --json url -q .url

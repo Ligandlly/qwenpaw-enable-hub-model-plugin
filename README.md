@@ -62,6 +62,20 @@ curl -sS -X POST "http://127.0.0.1:$PORT/api/plugins/upload?force=true" \
   -F "file=@dist/enable-hub-model-1.0.0.zip"
 ```
 
+### 方式四：离线 / 气隙环境（GitHub Release）
+
+推 `v*` tag 时 Release 会附上离线包和校验和，内网主机不需要任何软件源：
+
+```bash
+gh release download v1.0.0 -R Ligandlly/qwenpaw-enable-hub-model-plugin \
+  --pattern '*.zip' --pattern 'SHA256SUMS'
+sha256sum -c SHA256SUMS                    # 校验拷贝完整性
+qpm install ./enable-hub-model-1.0.0.zip --yes
+```
+
+插件只依赖 Python 标准库；CI 用 `python -I -S` 逐个导入模块来证明这一点
+（没有 `site-packages` 也能导入），所以离线安装不需要 pip、不需要索引、不需要联网。
+
 ### 方式三：控制台
 
 运行时控制台的插件管理页上传 ZIP 即可。ZIP 里只有一个顶层目录

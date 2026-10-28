@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: test compile bundle clean
+.PHONY: test compile bundle verify clean
 
 test:
 	$(PYTHON) -m pytest -q
@@ -10,6 +10,9 @@ compile:
 
 bundle:
 	$(PYTHON) scripts/bundle.py
+
+verify: bundle
+	@for zip in dist/*.zip; do $(PYTHON) scripts/verify_offline.py "$$zip"; done
 
 clean:
 	rm -rf dist __pycache__ .pytest_cache

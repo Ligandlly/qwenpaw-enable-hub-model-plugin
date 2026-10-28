@@ -1,0 +1,24 @@
+{
+  "id": "enable-hub-model",
+  "name": "Enable Hub Default Model",
+  "version": "1.0.0",
+  "type": "hook",
+  "description": "Enable the Hub-provided default model and make it the runtime default chat model",
+  "description_i18n": {
+    "zh-CN": "启用 Hub 提供的默认模型，并设置为运行时的默认对话模型",
+    "en-US": "Enable the Hub-provided default model and make it the runtime default chat model"
+  },
+  "author": "Ligandlly",
+  "entry": {
+    "backend": "enable_hub_model.py"
+  },
+  "dependencies": [],
+  "sdk": {
+    "version": "1.0.0",
+    "capabilities": ["config", "models"]
+  },
+  "qwenpaw_version": {
+    "min": "2.2.2"
+  },
+  "meta": {}
+}
